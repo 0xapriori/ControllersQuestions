@@ -139,78 +139,6 @@
     <div class="container">
         <h1>A Technical Specification for Bidirectional State Attestation Between EVM-based L1 and L2 Protocol Adaptors</h1>
 
-        <h2>Direct Answers to Project Questions</h2>
-        <p>Here are the direct answers to your explicit questions, based on the detailed analysis in the report.</p>
-
-        <blockquote>
-            <p><strong>Question 1: How does the Ethereum PA check that Base state has changed? How about the other way around?</strong></p>
-        </blockquote>
-        <p>This is a fundamentally <em>asymmetric</em> relationship.</p>
-        <ul>
-            <li><strong>L1-to-L2 (Ethereum to Base):</strong> The L2 PA (on Base) <strong>cannot</strong> "check" the L1 PA's state. L2 contracts cannot read the L1 state root.[1, 2] The <em>only</em> secure method is for the L1 PA to <em>send a message</em> to the L2 PA using the native L1-to-L2 bridge (e.g., <code>OptimismPortal</code> [3, 4]). The L2 PA then "endorses" this state change by verifying that the <code>msg.sender</code> is the aliased address of the L1 PA.[5]</li>
-            <li><strong>L2-to-L1 (Base to Ethereum):</strong> The L1 PA (on Ethereum) "checks" the L2 PA's state by verifying a proof. This is the "endorsement" process for your GMP, and you have three models to choose from:
-                <ol>
-                    <li><strong>Model A (Optimistic):</strong> The L1 PA verifies a Merkle-Patricia-Trie (MPT) proof against a <em>finalized</em> L2 state root. It gets this root from the on-chain L1 bridge oracle (the <code>L2OutputOracle</code> contract [3, 6, 4]), which enforces the ~7-day finality (challenge) period.[7, 8]</li>
-                    <li><strong>Model B (ZK):</strong> The L1 PA verifies a ZK proof (e.g., from Risc0 [9, 10]) that proves the L2 PA's execution <em>instantly</em>.</li>
-                    <li><strong>Model C (Attested):</strong> The L1 PA verifies an attestation from a permissionless solver network. This model is only secure for L2-native resources (where the L1 PA holds no collateral) and can be trust-minimized using ZKPs and TEEs.</li>
-                </ol>
-            </li>
-        </ul>
-
-        <blockquote>
-            <p><strong>Question 2: How can I hardcode state attestation? (i.e., provide an algorithm...)</strong></p>
-        </blockquote>
-        <p>You can "hardcode" state attestation by implementing <strong>Model A (Optimistic)</strong>. The algorithm is a 3-step process detailed in Section 4 of this report:</p>
-        <ol>
-            <li><strong>Off-Chain: Calculate Storage Slot.</strong> Deterministically calculate the MPT <code>key</code> (the storage slot) of the variable you want to check in the L2 PA contract.[11, 12, 13, 2]</li>
-            <li><strong>Off-Chain: Generate Proof.</strong> An off-chain relayer calls <code>eth_getProof</code> [11, 14, 12, 15, 13, 16] on a <em>finalized</em> L2 block to get the <code>storageProof</code> data.</li>
-            <li><strong>On-Chain (L1 PA): Verify Proof.</strong> Your L1 PA contract executes the following logic:
-                <ul>
-                    <li>Fetches the <em>finalized</em> <code>l2StateRoot</code> from the L1 <code>L2OutputOracle</code> contract.[3, 6, 4]</li>
-                    <li>Performs the finality check (see Q3).</li>
-                    <li>Uses a Solidity MPT verifier library [17, 18, 19, 20, 21, 22, 23] to verify the <code>storageProof</code> against the <code>l2StateRoot</code>.</li>
-                    <li><strong>Crucial Security Note:</strong> This verifier <em>must</em> be patched against the "empty proof" vulnerability [24, 25, 26], which can be used to forge proofs.</li>
-                </ul>
-            </li>
-        </ol>
-
-        <blockquote>
-            <p><strong>Question 3: Specifically how can we attest to finality?</strong></p>
-        </blockquote>
-        <p>Finality attestation is different for each model:</p>
-        <ul>
-            <li><strong>Model A (Optimistic):</strong> Finality is <strong>time-based</strong>. You <em>must</em> check that the L2 state root (from the <code>L2OutputOracle</code>) is older than the ~7-day challenge period.[7, 8] The Solidity check is <code>require(block.timestamp &gt; proposal.timestamp + FINALIZATION_PERIOD_SECONDS)</code>.</li>
-            <li><strong>Model B (ZK):</strong> Finality is <strong>instant and mathematical</strong>. The attestation <em>is</em> the successful verification of the ZK proof. A <code>true</code> return from the verifier contract <em>is</em> the proof of finality.[10]</li>
-            <li><strong>Model C (Attested):</strong> Finality is <strong>instant and trust-based</strong>. The attestation is the successful verification of the solver's credentials (e.g., their ZK proof of state, their TEE remote attestation, or their simple multisig).</li>
-        </ul>
-
-        <blockquote>
-            <p><strong>Question 4: How from that state can I deterministically fetch the state of the given PA?</strong></p>
-        </blockquote>
-        <p>The L1 PA (an on-chain contract) <strong>cannot "fetch"</strong> state. It must be <em>given</em> the state and a proof, which it then verifies.</p>
-        <p>The "deterministic" part is how an off-chain relayer <em>finds</em> the state to build the proof. State variables in Solidity are stored at deterministic storage slots.[12, 13]</p>
-        <ul>
-            <li><strong>For simple variables</strong> (e.g., <code>uint256 public myVar</code> at slot 0), the MPT key is <code>0x00...00</code>.[12, 13]</li>
-            <li><strong>For mappings</strong> (e.g., <code>mapping(address => uint) balances</code> at slot 3), the key for <code>balances[0xabc...]</code> is <code>keccak256(abi.encodePacked(0x00...abc..., 0x00...003))</code>.[11, 2]</li>
-        </ul>
-        <p>Your off-chain relayer uses this deterministic key to call <code>eth_getProof</code> [16] and get the <code>storageProof</code>. This proof is then passed to your L1 PA, which uses the same deterministic key in its <code>verifyStorageProof</code> function.[17, 22]</p>
-
-        <blockquote>
-            <p><strong>Question 5:...what is the data availability of the service providing us with state change proofs? e.g. if we use Boundless Signal, what happens if Risc0 version (and hence verification key) changes?</strong></p>
-        </blockquote>
-        <p>This question correctly identifies two distinct risks of <strong>Model B (ZK)</strong>:</p>
-        <ol>
-            <li><strong>Data Availability (Boundless Signal):</strong> Boundless is a "proof market".[3, 27, 28, 29] This is a <strong>liveness/service availability risk</strong>, not a DA risk. If the Boundless network fails (e.g., it's unprofitable for provers), new L2 state changes cannot be <em>proven</em>. This would <em>halt</em> your GMP's fast path until a proof can be generated. The system doesn't break, but it freezes.</li>
-            <li><strong>Risc0 Version Changes (Verification Key):</strong> This is a critical <strong>centralized governance risk</strong>. The <code>RiscZeroVerifierRouter</code> contract is an upgradeable proxy managed by the Risc0 team.[5, 10] When Risc0 updates its zkVM, it updates this router to point to a new verifier contract.[10, 30]
-                <ul>
-                    <li><strong>The Risk:</strong> If the Risc0 team's governance keys are compromised, an attacker could point the router to a malicious verifier (e.g., <code>function verify(...) { return true; }</code>). This would allow them to forge any proof and steal all funds from your L1 PA.</li>
-                    <li><strong>Mitigation:</strong> Your L1 PA *must not* blindly trust this router. It should <strong>wrap the router</strong> in its own governance (DAO/multisig) and a circuit-breaker. This mechanism would pause all attestations if the router's address changes without your own DAO's explicit approval.[31]</li>
-                </ul>
-            </li>
-        </ol>
-
-        <hr>
-
         <h2>Executive Summary</h2>
         <p>This report provides a technical specification for achieving provable, bidirectional state attestation between Protocol Adaptors (PAs) deployed on Ethereum (L1), Base (L2), and Arbitrum (L2). The architectural premise is derived from the Anoma protocol's conceptual model of "resources" managed by "controllers," where interoperability is achieved via a process of "endorsement". This analysis translates that academic framework into a practical, EVM-native implementation for our custom General Message Passing (GMP) protocol.</p>
         <p>The core challenge is attesting to <em>finalized</em> state across heterogeneous trust boundaries. The analysis concludes the following:</p>
@@ -530,5 +458,78 @@ contract L1_ProtocolAdaptor {
         </ol>
         <p>Ultimately, the project is an EVM-native implementation of the Anoma cross-controller resource model.[48, 39, 9] The GMP (general message passing protocol) is our "endorsement" protocol, and its security will be defined by the trust model we choose.</p>
     </div>
+
+            <h2>Direct Answers to Project Questions</h2>
+        <p>Here are the direct answers to your explicit questions, based on the detailed analysis in the report.</p>
+
+        <blockquote>
+            <p><strong>Question 1: How does the Ethereum PA check that Base state has changed? How about the other way around?</strong></p>
+        </blockquote>
+        <p>This is a fundamentally <em>asymmetric</em> relationship.</p>
+        <ul>
+            <li><strong>L1-to-L2 (Ethereum to Base):</strong> The L2 PA (on Base) <strong>cannot</strong> "check" the L1 PA's state. L2 contracts cannot read the L1 state root.[1, 2] The <em>only</em> secure method is for the L1 PA to <em>send a message</em> to the L2 PA using the native L1-to-L2 bridge (e.g., <code>OptimismPortal</code> [3, 4]). The L2 PA then "endorses" this state change by verifying that the <code>msg.sender</code> is the aliased address of the L1 PA.[5]</li>
+            <li><strong>L2-to-L1 (Base to Ethereum):</strong> The L1 PA (on Ethereum) "checks" the L2 PA's state by verifying a proof. This is the "endorsement" process for your GMP, and you have three models to choose from:
+                <ol>
+                    <li><strong>Model A (Optimistic):</strong> The L1 PA verifies a Merkle-Patricia-Trie (MPT) proof against a <em>finalized</em> L2 state root. It gets this root from the on-chain L1 bridge oracle (the <code>L2OutputOracle</code> contract [3, 6, 4]), which enforces the ~7-day finality (challenge) period.[7, 8]</li>
+                    <li><strong>Model B (ZK):</strong> The L1 PA verifies a ZK proof (e.g., from Risc0 [9, 10]) that proves the L2 PA's execution <em>instantly</em>.</li>
+                    <li><strong>Model C (Attested):</strong> The L1 PA verifies an attestation from a permissionless solver network. This model is only secure for L2-native resources (where the L1 PA holds no collateral) and can be trust-minimized using ZKPs and TEEs.</li>
+                </ol>
+            </li>
+        </ul>
+
+        <blockquote>
+            <p><strong>Question 2: How can I hardcode state attestation? (i.e., provide an algorithm...)</strong></p>
+        </blockquote>
+        <p>You can "hardcode" state attestation by implementing <strong>Model A (Optimistic)</strong>. The algorithm is a 3-step process detailed in Section 4 of this report:</p>
+        <ol>
+            <li><strong>Off-Chain: Calculate Storage Slot.</strong> Deterministically calculate the MPT <code>key</code> (the storage slot) of the variable you want to check in the L2 PA contract.[11, 12, 13, 2]</li>
+            <li><strong>Off-Chain: Generate Proof.</strong> An off-chain relayer calls <code>eth_getProof</code> [11, 14, 12, 15, 13, 16] on a <em>finalized</em> L2 block to get the <code>storageProof</code> data.</li>
+            <li><strong>On-Chain (L1 PA): Verify Proof.</strong> Your L1 PA contract executes the following logic:
+                <ul>
+                    <li>Fetches the <em>finalized</em> <code>l2StateRoot</code> from the L1 <code>L2OutputOracle</code> contract.[3, 6, 4]</li>
+                    <li>Performs the finality check (see Q3).</li>
+                    <li>Uses a Solidity MPT verifier library [17, 18, 19, 20, 21, 22, 23] to verify the <code>storageProof</code> against the <code>l2StateRoot</code>.</li>
+                    <li><strong>Crucial Security Note:</strong> This verifier <em>must</em> be patched against the "empty proof" vulnerability [24, 25, 26], which can be used to forge proofs.</li>
+                </ul>
+            </li>
+        </ol>
+
+        <blockquote>
+            <p><strong>Question 3: Specifically how can we attest to finality?</strong></p>
+        </blockquote>
+        <p>Finality attestation is different for each model:</p>
+        <ul>
+            <li><strong>Model A (Optimistic):</strong> Finality is <strong>time-based</strong>. You <em>must</em> check that the L2 state root (from the <code>L2OutputOracle</code>) is older than the ~7-day challenge period.[7, 8] The Solidity check is <code>require(block.timestamp &gt; proposal.timestamp + FINALIZATION_PERIOD_SECONDS)</code>.</li>
+            <li><strong>Model B (ZK):</strong> Finality is <strong>instant and mathematical</strong>. The attestation <em>is</em> the successful verification of the ZK proof. A <code>true</code> return from the verifier contract <em>is</em> the proof of finality.[10]</li>
+            <li><strong>Model C (Attested):</strong> Finality is <strong>instant and trust-based</strong>. The attestation is the successful verification of the solver's credentials (e.g., their ZK proof of state, their TEE remote attestation, or their simple multisig).</li>
+        </ul>
+
+        <blockquote>
+            <p><strong>Question 4: How from that state can I deterministically fetch the state of the given PA?</strong></p>
+        </blockquote>
+        <p>The L1 PA (an on-chain contract) <strong>cannot "fetch"</strong> state. It must be <em>given</em> the state and a proof, which it then verifies.</p>
+        <p>The "deterministic" part is how an off-chain relayer <em>finds</em> the state to build the proof. State variables in Solidity are stored at deterministic storage slots.[12, 13]</p>
+        <ul>
+            <li><strong>For simple variables</strong> (e.g., <code>uint256 public myVar</code> at slot 0), the MPT key is <code>0x00...00</code>.[12, 13]</li>
+            <li><strong>For mappings</strong> (e.g., <code>mapping(address => uint) balances</code> at slot 3), the key for <code>balances[0xabc...]</code> is <code>keccak256(abi.encodePacked(0x00...abc..., 0x00...003))</code>.[11, 2]</li>
+        </ul>
+        <p>Your off-chain relayer uses this deterministic key to call <code>eth_getProof</code> [16] and get the <code>storageProof</code>. This proof is then passed to your L1 PA, which uses the same deterministic key in its <code>verifyStorageProof</code> function.[17, 22]</p>
+
+        <blockquote>
+            <p><strong>Question 5:...what is the data availability of the service providing us with state change proofs? e.g. if we use Boundless Signal, what happens if Risc0 version (and hence verification key) changes?</strong></p>
+        </blockquote>
+        <p>This question correctly identifies two distinct risks of <strong>Model B (ZK)</strong>:</p>
+        <ol>
+            <li><strong>Data Availability (Boundless Signal):</strong> Boundless is a "proof market".[3, 27, 28, 29] This is a <strong>liveness/service availability risk</strong>, not a DA risk. If the Boundless network fails (e.g., it's unprofitable for provers), new L2 state changes cannot be <em>proven</em>. This would <em>halt</em> your GMP's fast path until a proof can be generated. The system doesn't break, but it freezes.</li>
+            <li><strong>Risc0 Version Changes (Verification Key):</strong> This is a critical <strong>centralized governance risk</strong>. The <code>RiscZeroVerifierRouter</code> contract is an upgradeable proxy managed by the Risc0 team.[5, 10] When Risc0 updates its zkVM, it updates this router to point to a new verifier contract.[10, 30]
+                <ul>
+                    <li><strong>The Risk:</strong> If the Risc0 team's governance keys are compromised, an attacker could point the router to a malicious verifier (e.g., <code>function verify(...) { return true; }</code>). This would allow them to forge any proof and steal all funds from your L1 PA.</li>
+                    <li><strong>Mitigation:</strong> Your L1 PA *must not* blindly trust this router. It should <strong>wrap the router</strong> in its own governance (DAO/multisig) and a circuit-breaker. This mechanism would pause all attestations if the router's address changes without your own DAO's explicit approval.[31]</li>
+                </ul>
+            </li>
+        </ol>
+
+        <hr>
+    
 </body>
 </html>
